@@ -1,4 +1,3 @@
-# Import Necessary Libraries
 import os
 import random
 import re
@@ -7,50 +6,38 @@ import pandas as pd
 from PIL import Image
 from tqdm import tqdm
 
-# Natural Language Processing
 import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 
-# PyTorch Libraries
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
-# Transformers for BERT
 from transformers import BertTokenizer, BertModel
 
-# Computer Vision Libraries
 import torchvision.models as models
 import torchvision.transforms as transforms
 
-# Graph Libraries
 import networkx as nx
 from torch_geometric.nn import GCNConv
 
-# Genetic Algorithm Libraries
 from deap import base, creator, tools, algorithms
 
-# Evaluation Metrics
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
-# Set Random Seeds for Reproducibility
+
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 
-# Download NLTK Data
 nltk.download('punkt')
 nltk.download('stopwords')
 
-# Device Configuration
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# ===========================
-# 1. Data Preprocessing
-# ===========================
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 class MABSA_Dataset(Dataset):
     def __init__(self, dataframe, tokenizer, image_transform, max_length=128):
@@ -107,9 +94,6 @@ class MABSA_Dataset(Dataset):
             'sentiment': sentiment
         }
 
-# ===========================
-# 2. Feature Extraction
-# ===========================
 
 class FeatureExtractor:
     def __init__(self):
@@ -146,13 +130,9 @@ class FeatureExtractor:
         images = images.to(device)
         with torch.no_grad():
             features = self.resnet(images)
-            features = features.view(features.size(0), -1)  # Shape: (batch_size, feature_size)
+            features = features.view(features.size(0), -1) 
         return features
 
-
-# ===========================
-# 3. Model Architecture
-# ===========================
 
 class MABSA_Model(nn.Module):
     def __init__(self, text_dim, image_dim, hidden_dim, num_classes):
@@ -172,7 +152,7 @@ class MABSA_Model(nn.Module):
         self.classifier = nn.Linear(hidden_dim, num_classes)
 
     def forward(self, text_features, image_features, edge_index):
-        # Project Text and Image Features
+        
         text_proj = F.relu(self.text_fc(text_features))  # Shape: (batch_size, hidden_dim)
         image_proj = F.relu(self.image_fc(image_features))  # Shape: (batch_size, hidden_dim)
 
@@ -195,19 +175,11 @@ class MABSA_Model(nn.Module):
 
         return logits
 
-# ===========================
-# 4. Genetic Algorithm Optimization
-# ===========================
 
-# Define the Evaluation Function
 def evaluate_model(individual, model, dataloader, criterion):
-    # Unpack Hyperparameters
+
     learning_rate, batch_size, num_layers, dropout_rate = individual
 
-    # Update DataLoader with New Batch Size
-    # (Assuming batch_size is already considered in dataloader initialization)
-
-    # Define Optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     # Training Loop (Single Epoch for Evaluation)
@@ -223,7 +195,6 @@ def evaluate_model(individual, model, dataloader, criterion):
         text_features = feature_extractor.extract_text_features(input_ids, attention_mask)
         image_features = feature_extractor.extract_image_features(image)
         
-        # Dummy edge_index for GCN (Assuming fully connected for simplicity)
         batch_size_current = text_features.size(0)
         edge_index = torch.combinations(torch.arange(batch_size_current), r=2).t().contiguous().to(device)
 
@@ -237,7 +208,6 @@ def evaluate_model(individual, model, dataloader, criterion):
 
         total_loss += loss.item()
 
-    # Validation Accuracy
     model.eval()
     all_preds = []
     all_labels = []
@@ -290,19 +260,13 @@ def setup_ga():
 
     return toolbox
 
-# ===========================
-# 5. Training and Evaluation
-# ===========================
-
 def train_and_evaluate(individual):
-    # Unpack Hyperparameters
+
     learning_rate, batch_size, num_layers, dropout_rate = individual
 
     # Update DataLoader with New Batch Size
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-
-    # Initialize Model with Current Hyperparameters
     model = MABSA_Model(text_dim=768, image_dim=2048, hidden_dim=hidden_dim, num_classes=num_classes).to(device)
     criterion = nn.CrossEntropyLoss()
 
@@ -310,41 +274,25 @@ def train_and_evaluate(individual):
     acc = evaluate_model(individual, model, val_loader, criterion)[0]
     return acc
 
-# ===========================
-# 6. Main Execution
-# ===========================
-
 if __name__ == "__main__":
-    # Parameters
     hidden_dim = 256
-    num_classes = 3  # positive, negative, neutral
+    num_classes = 3 
 
-    # Load Dataset
-    # Assume the dataset is a CSV with columns: 'text', 'aspect', 'sentiment', 'image_path'
-    # sentiment is encoded as 0: negative, 1: neutral, 2: positive
-    data_path = 'path_to_dataset.csv'
+    data_path = 'dataset.csv'
     data = pd.read_csv(data_path)
 
-    # Split into Train and Validation
     train_df = data.sample(frac=0.8, random_state=SEED)
     val_df = data.drop(train_df.index)
 
-    # Initialize Feature Extractor
     feature_extractor = FeatureExtractor()
 
-    # Initialize Dataset and DataLoader
     train_dataset = MABSA_Dataset(train_df, feature_extractor.tokenizer, feature_extractor.image_transform)
     val_dataset = MABSA_Dataset(val_df, feature_extractor.tokenizer, feature_extractor.image_transform)
 
-    # Initialize Genetic Algorithm
     toolbox = setup_ga()
     population = toolbox.population(n=10)  # Population size
-    ngen = 5  # Number of generations
+    ngen = 5  
 
-    # Define the evaluation function with model and dataloader
-    # Note: In the GA, the evaluate_model function will train and evaluate the model for each individual
-
-    # Genetic Algorithm Execution
     print("Starting Genetic Algorithm Optimization...")
     stats = tools.Statistics(lambda ind: ind.fitness.values)
     stats.register("avg", np.mean)
@@ -355,24 +303,19 @@ if __name__ == "__main__":
     algorithms.eaSimple(population, toolbox, cxpb=0.5, mutpb=0.2, ngen=ngen, 
                         stats=stats, halloffame=hof, verbose=True)
 
-    # Best Individual
     best_individual = hof[0]
     print(f"Best Individual: {best_individual}")
     print(f"Best Fitness (Accuracy): {best_individual.fitness.values[0]}")
 
-    # Train Final Model with Best Hyperparameters
     learning_rate, batch_size, num_layers, dropout_rate = best_individual
 
-    # Update DataLoader with Best Batch Size
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-    # Initialize Final Model
     final_model = MABSA_Model(text_dim=768, image_dim=2048, hidden_dim=hidden_dim, num_classes=num_classes).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(final_model.parameters(), lr=learning_rate)
 
-    # Training Loop
     epochs = 10
     for epoch in range(epochs):
         final_model.train()
