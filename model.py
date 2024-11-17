@@ -148,3 +148,50 @@ class FeatureExtractor:
             features = self.resnet(images)
             features = features.view(features.size(0), -1)  # Shape: (batch_size, feature_size)
         return features
+
+
+# ===========================
+# 3. Model Architecture
+# ===========================
+
+class MABSA_Model(nn.Module):
+    def __init__(self, text_dim, image_dim, hidden_dim, num_classes):
+        super(MABSA_Model, self).__init__()
+        # Text and Image Embeddings
+        self.text_fc = nn.Linear(text_dim, hidden_dim)
+        self.image_fc = nn.Linear(image_dim, hidden_dim)
+
+        # Attention Mechanism
+        self.attention = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=4)
+
+        # Graph Convolutional Network
+        self.gcn1 = GCNConv(hidden_dim, hidden_dim)
+        self.gcn2 = GCNConv(hidden_dim, hidden_dim)
+
+        # Classification Layer
+        self.classifier = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, text_features, image_features, edge_index):
+        # Project Text and Image Features
+        text_proj = F.relu(self.text_fc(text_features))  # Shape: (batch_size, hidden_dim)
+        image_proj = F.relu(self.image_fc(image_features))  # Shape: (batch_size, hidden_dim)
+
+        # Combine Text and Image Features
+        combined = text_proj + image_proj  # Simple fusion; can be replaced with more complex methods
+
+        # Prepare for Attention (Seq Length is 1)
+        combined = combined.unsqueeze(1)  # Shape: (seq_length=1, batch_size, hidden_dim)
+        attn_output, _ = self.attention(combined, combined, combined)  # Self-Attention
+
+        attn_output = attn_output.squeeze(1)  # Shape: (batch_size, hidden_dim)
+
+        # Graph Convolutional Layers
+        gcn_output = self.gcn1(attn_output, edge_index)
+        gcn_output = F.relu(gcn_output)
+        gcn_output = self.gcn2(gcn_output, edge_index)
+
+        # Classification
+        logits = self.classifier(gcn_output)
+
+        return logits
+
