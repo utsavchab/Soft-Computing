@@ -195,3 +195,276 @@ class MABSA_Model(nn.Module):
 
         return logits
 
+# ===========================
+# 4. Genetic Algorithm Optimization
+# ===========================
+
+# Define the Evaluation Function
+def evaluate_model(individual, model, dataloader, criterion):
+    # Unpack Hyperparameters
+    learning_rate, batch_size, num_layers, dropout_rate = individual
+
+    # Update DataLoader with New Batch Size
+    # (Assuming batch_size is already considered in dataloader initialization)
+
+    # Define Optimizer
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+    # Training Loop (Single Epoch for Evaluation)
+    model.train()
+    total_loss = 0
+    for batch in dataloader:
+        input_ids = batch['input_ids'].to(device)
+        attention_mask = batch['attention_mask'].to(device)
+        image = batch['image'].to(device)
+        sentiments = batch['sentiment'].to(device)
+
+        # Forward Pass
+        text_features = feature_extractor.extract_text_features(input_ids, attention_mask)
+        image_features = feature_extractor.extract_image_features(image)
+        
+        # Dummy edge_index for GCN (Assuming fully connected for simplicity)
+        batch_size_current = text_features.size(0)
+        edge_index = torch.combinations(torch.arange(batch_size_current), r=2).t().contiguous().to(device)
+
+        outputs = model(text_features, image_features, edge_index)
+        loss = criterion(outputs, sentiments)
+
+        # Backward Pass
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+
+    # Validation Accuracy
+    model.eval()
+    all_preds = []
+    all_labels = []
+    with torch.no_grad():
+        for batch in dataloader:
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            image = batch['image'].to(device)
+            sentiments = batch['sentiment'].to(device)
+
+            text_features = feature_extractor.extract_text_features(input_ids, attention_mask)
+            image_features = feature_extractor.extract_image_features(image)
+            
+            # Dummy edge_index for GCN
+            batch_size_current = text_features.size(0)
+            edge_index = torch.combinations(torch.arange(batch_size_current), r=2).t().contiguous().to(device)
+
+            outputs = model(text_features, image_features, edge_index)
+            _, preds = torch.max(outputs, dim=1)
+
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(sentiments.cpu().numpy())
+
+    acc = accuracy_score(all_labels, all_preds)
+    return (acc, )
+
+# Setup Genetic Algorithm
+def setup_ga():
+    creator.create("FitnessMax", base.Fitness, weights=(1.0,))  # Maximize Accuracy
+    creator.create("Individual", list, fitness=creator.FitnessMax)
+
+    toolbox = base.Toolbox()
+
+    # Define Hyperparameter Ranges
+    toolbox.register("learning_rate", random.choice, [0.001, 0.005, 0.01])
+    toolbox.register("batch_size", random.choice, [16, 32, 64])
+    toolbox.register("num_layers", random.choice, [2, 3, 4])
+    toolbox.register("dropout_rate", random.choice, [0.3, 0.5, 0.7])
+
+    # Structure initial individuals
+    toolbox.register("individual", tools.initCycle, creator.Individual,
+                     (toolbox.learning_rate, toolbox.batch_size, toolbox.num_layers, toolbox.dropout_rate), n=1)
+    toolbox.register("population", tools.initRepeat, list, toolbox.individual)
+
+    # Define Evaluation, Selection, Crossover, Mutation
+    toolbox.register("evaluate", evaluate_model)
+    toolbox.register("mate", tools.cxTwoPoint)
+    toolbox.register("mutate", tools.mutShuffleIndexes, indpb=0.2)
+    toolbox.register("select", tools.selTournament, tournsize=3)
+
+    return toolbox
+
+# ===========================
+# 5. Training and Evaluation
+# ===========================
+
+def train_and_evaluate(individual):
+    # Unpack Hyperparameters
+    learning_rate, batch_size, num_layers, dropout_rate = individual
+
+    # Update DataLoader with New Batch Size
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+    # Initialize Model with Current Hyperparameters
+    model = MABSA_Model(text_dim=768, image_dim=2048, hidden_dim=hidden_dim, num_classes=num_classes).to(device)
+    criterion = nn.CrossEntropyLoss()
+
+    # Evaluate Model
+    acc = evaluate_model(individual, model, val_loader, criterion)[0]
+    return acc
+
+# ===========================
+# 6. Main Execution
+# ===========================
+
+if __name__ == "__main__":
+    # Parameters
+    hidden_dim = 256
+    num_classes = 3  # positive, negative, neutral
+
+    # Load Dataset
+    # Assume the dataset is a CSV with columns: 'text', 'aspect', 'sentiment', 'image_path'
+    # sentiment is encoded as 0: negative, 1: neutral, 2: positive
+    data_path = 'path_to_dataset.csv'
+    data = pd.read_csv(data_path)
+
+    # Split into Train and Validation
+    train_df = data.sample(frac=0.8, random_state=SEED)
+    val_df = data.drop(train_df.index)
+
+    # Initialize Feature Extractor
+    feature_extractor = FeatureExtractor()
+
+    # Initialize Dataset and DataLoader
+    train_dataset = MABSA_Dataset(train_df, feature_extractor.tokenizer, feature_extractor.image_transform)
+    val_dataset = MABSA_Dataset(val_df, feature_extractor.tokenizer, feature_extractor.image_transform)
+
+    # Initialize Genetic Algorithm
+    toolbox = setup_ga()
+    population = toolbox.population(n=10)  # Population size
+    ngen = 5  # Number of generations
+
+    # Define the evaluation function with model and dataloader
+    # Note: In the GA, the evaluate_model function will train and evaluate the model for each individual
+
+    # Genetic Algorithm Execution
+    print("Starting Genetic Algorithm Optimization...")
+    stats = tools.Statistics(lambda ind: ind.fitness.values)
+    stats.register("avg", np.mean)
+    stats.register("max", np.max)
+
+    hof = tools.HallOfFame(1)
+
+    algorithms.eaSimple(population, toolbox, cxpb=0.5, mutpb=0.2, ngen=ngen, 
+                        stats=stats, halloffame=hof, verbose=True)
+
+    # Best Individual
+    best_individual = hof[0]
+    print(f"Best Individual: {best_individual}")
+    print(f"Best Fitness (Accuracy): {best_individual.fitness.values[0]}")
+
+    # Train Final Model with Best Hyperparameters
+    learning_rate, batch_size, num_layers, dropout_rate = best_individual
+
+    # Update DataLoader with Best Batch Size
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+    # Initialize Final Model
+    final_model = MABSA_Model(text_dim=768, image_dim=2048, hidden_dim=hidden_dim, num_classes=num_classes).to(device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(final_model.parameters(), lr=learning_rate)
+
+    # Training Loop
+    epochs = 10
+    for epoch in range(epochs):
+        final_model.train()
+        total_loss = 0
+        for batch in tqdm(train_loader, desc=f"Training Epoch {epoch+1}/{epochs}"):
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            image = batch['image'].to(device)
+            sentiments = batch['sentiment'].to(device)
+
+            # Extract Features
+            text_features = feature_extractor.extract_text_features(input_ids, attention_mask)
+            image_features = feature_extractor.extract_image_features(image)
+
+            # Dummy edge_index for GCN (Fully Connected)
+            batch_size_current = text_features.size(0)
+            edge_index = torch.combinations(torch.arange(batch_size_current), r=2).t().contiguous().to(device)
+
+            # Forward Pass
+            outputs = final_model(text_features, image_features, edge_index)
+            loss = criterion(outputs, sentiments)
+
+            # Backward and Optimize
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+
+        avg_loss = total_loss / len(train_loader)
+        print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}")
+
+        # Validation
+        final_model.eval()
+        all_preds = []
+        all_labels = []
+        with torch.no_grad():
+            for batch in val_loader:
+                input_ids = batch['input_ids'].to(device)
+                attention_mask = batch['attention_mask'].to(device)
+                image = batch['image'].to(device)
+                sentiments = batch['sentiment'].to(device)
+
+                text_features = feature_extractor.extract_text_features(input_ids, attention_mask)
+                image_features = feature_extractor.extract_image_features(image)
+
+                # Dummy edge_index for GCN
+                batch_size_current = text_features.size(0)
+                edge_index = torch.combinations(torch.arange(batch_size_current), r=2).t().contiguous().to(device)
+
+                outputs = final_model(text_features, image_features, edge_index)
+                _, preds = torch.max(outputs, dim=1)
+
+                all_preds.extend(preds.cpu().numpy())
+                all_labels.extend(sentiments.cpu().numpy())
+
+        acc = accuracy_score(all_labels, all_preds)
+        precision, recall, f1, _ = precision_recall_fscore_support(all_labels, all_preds, average='weighted')
+        print(f"Validation Accuracy: {acc:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}, F1-Score: {f1:.4f}")
+
+    # Final Evaluation on Validation Set
+    final_model.eval()
+    all_preds = []
+    all_labels = []
+    with torch.no_grad():
+        for batch in val_loader:
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            image = batch['image'].to(device)
+            sentiments = batch['sentiment'].to(device)
+
+            text_features = feature_extractor.extract_text_features(input_ids, attention_mask)
+            image_features = feature_extractor.extract_image_features(image)
+
+            # Dummy edge_index for GCN
+            batch_size_current = text_features.size(0)
+            edge_index = torch.combinations(torch.arange(batch_size_current), r=2).t().contiguous().to(device)
+
+            outputs = final_model(text_features, image_features, edge_index)
+            _, preds = torch.max(outputs, dim=1)
+
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(sentiments.cpu().numpy())
+
+    acc = accuracy_score(all_labels, all_preds)
+    precision, recall, f1, _ = precision_recall_fscore_support(all_labels, all_preds, average='weighted')
+    print("\nFinal Evaluation on Validation Set:")
+    print(f"Accuracy: {acc:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall: {recall:.4f}")
+    print(f"F1-Score: {f1:.4f}")
+
+    # Save the Trained Model
+    torch.save(final_model.state_dict(), 'mabsa_model.pth')
+    print("Model saved as mabsa_model.pth")
